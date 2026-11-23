@@ -1,6 +1,6 @@
 name: Video Demo - BAYUDEV.WEB.ID
 
-on:
+"on":
   workflow_dispatch:
   push:
     branches: [main]
