@@ -19,8 +19,120 @@ jobs:
     name: Render video demo
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      DEMO_PROJECT: ${{ github.workspace }}/demo
+      DEMO_CONFIG: ${{ github.workspace }}/demo/demo.config.ts
+      DEMO_APP_ROOT: ${{ github.workspace }}
+      DEMO_OUT: ${{ github.workspace }}/demo/demo-out
+      DEMO_TTS_ENGINE: edge-tts
+      DEMO_TTS_VOICE: id-ID-ArdiNeural
+      DEMO_VOICE_SPEED: '1'
+      DEMO_FPS: '30'
+      DEMO_WORKERS: '1'
+      DEMO_TOUR: '1'
+      DEMO_WEBM: '0'
+      DEMO_BUILD: '0'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Smoke
-        run: echo ok
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -n 1
+
+      - name: Install Node dependencies
+        run: |
+          npm ci || npm install
+          mkdir -p node_modules
+          ln -sfn .. node_modules/video-demo
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Install edge-tts
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install edge-tts
+          edge-tts --version
+
+      - name: Prepare demo workspace
+        run: |
+          mkdir -p "$DEMO_PROJECT"
+          printf '{"appRoot":"%s"}\n' "$GITHUB_WORKSPACE" > "$DEMO_PROJECT/.origin"
+          echo "DEMO_PROJECT=$DEMO_PROJECT"
+          echo "DEMO_CONFIG=$DEMO_CONFIG"
+
+      - name: Smoke check target site
+        run: |
+          curl -fsSI https://bayudev.web.id | head -n 20
+
+      - name: Render video demo
+        id: render
+        run: |
+          set -o pipefail
+          node engine/run.mjs 2>&1 | tee render.log
+
+      - name: Verify outputs
+        id: verify
+        run: |
+          set -euo pipefail
+          OUT="$DEMO_OUT"
+          echo "Listing output dir:"
+          find "$OUT" -maxdepth 3 -type f | sort || true
+          test -f "$OUT/manifest.json"
+          test -f "$OUT/index.html"
+          MP4=$(find "$OUT" -name '*.mp4' | sort | head -n 1)
+          if [ -z "$MP4" ]; then echo "No MP4 found"; exit 1; fi
+          echo "mp4=$MP4" >> "$GITHUB_OUTPUT"
+          POSTER=$(find "$OUT" -name '*.poster.jpg' -o -name '*.png' | sort | head -n 1 || true)
+          echo "poster=$POSTER" >> "$GITHUB_OUTPUT"
+          python3 -c "import json,os; out=os.environ['DEMO_OUT']; m=json.load(open(os.path.join(out,'manifest.json'))); scenes=m.get('scenes',[]); theme=m.get('themes',['dark'])[0]; dur=max((float(s.get('assets',{}).get(theme,{}).get('seconds',0)) for s in scenes), default=0); st=m.get('stage',{}); print('scene_count='+str(len(scenes))); print('duration_approx='+str(dur)); print('resolution='+str(st.get('width'))+'x'+str(st.get('height'))); print('stage_fps='+str(st.get('fps')))" >> "$GITHUB_OUTPUT"
+          echo "Render verification passed"
+
+      - name: Upload demo artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bayudev-video-demo
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            demo/demo-out/**
+            render.log
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## BAYUDEV Video Demo"
+            echo ""
+            echo "- Target: https://bayudev.web.id"
+            echo "- TTS Engine: edge-tts (${DEMO_TTS_VOICE})"
+            echo "- Output dir: demo/demo-out"
+            if [ -f "$DEMO_OUT/manifest.json" ]; then
+              echo "- Manifest: generated"
+            else
+              echo "- Manifest: missing"
+            fi
+            if find "$DEMO_OUT" -name '*.mp4' | grep -q .; then
+              echo "- MP4: generated"
+              echo ""
+              echo "### Files"
+              find "$DEMO_OUT" -maxdepth 3 -type f | sort | sed 's/^/- /'
+            else
+              echo "- MP4: not found"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
