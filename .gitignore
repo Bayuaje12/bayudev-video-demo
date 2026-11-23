@@ -1,0 +1,10 @@
+node_modules/
+demo/demo-out/
+demo/.build/
+demo/.frames/
+**/.frames/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
